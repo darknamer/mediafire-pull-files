@@ -63,6 +63,58 @@ def parse_folder_identifier(identifier):
     return "mf:///" + identifier.lstrip("/")
 
 
+def _folder_display_name(identifier, uri, index):
+    """Derive a safe subdir name for a folder (for multi-folder download)."""
+    # From URL path: .../folder/KEY/FolderName -> use FolderName
+    match = MEDIAFIRE_FOLDER_URL_PATTERN.search(identifier)
+    if match:
+        # URL like https://www.mediafire.com/folder/1z3vk56tf787k/ImageBasedAttendance
+        parts = identifier.rstrip("/").split("/")
+        if len(parts) > 0 and parts[-1] and parts[-1] != match.group(1):
+            name = parts[-1].strip()
+            if name:
+                return _sanitize_dirname(name)
+        return _sanitize_dirname(match.group(1))  # folder key
+    # mf:folderkey or mf:///Path -> use key or last path segment
+    if uri.startswith("mf:"):
+        key = uri[3:].split("/")[0]
+        return _sanitize_dirname(key) if key else "folder_{}".format(index)
+    # mf:///Path/To/Folder
+    path = uri.replace("mf://", "").strip("/")
+    return _sanitize_dirname(path.split("/")[-1] or "folder_{}".format(index))
+
+
+def _sanitize_dirname(name):
+    """Make a string safe for use as a directory name."""
+    # Remove or replace chars that are invalid in dir names
+    for c in ('/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'):
+        name = name.replace(c, "_")
+    return name.strip(". ") or "folder"
+
+
+def parse_folder_identifiers(raw):
+    """
+    Parse a string into a list of (folder_uri, display_name) for multi-folder download.
+
+    Supports comma- and newline-separated values. Strips whitespace and skips empty entries.
+    """
+    if not raw or not raw.strip():
+        return []
+    # Split by comma and newline, strip, drop empty
+    parts = []
+    for s in re.split(r"[\n,]+", raw):
+        s = s.strip()
+        if s:
+            parts.append(s)
+    result = []
+    for i, identifier in enumerate(parts):
+        uri = parse_folder_identifier(identifier)
+        if uri:
+            name = _folder_display_name(identifier, uri, i)
+            result.append((uri, name))
+    return result
+
+
 def download_folder(client, folder_uri, local_base_path, verbose=True):
     """
     Recursively download all files from a MediaFire folder into local_base_path,
@@ -105,12 +157,11 @@ def main():
     )
     parser.add_argument(
         "folder",
-        nargs="?",
-        default=os.environ.get("MEDIAFIRE_FOLDER", ""),
+        nargs="*",
+        default=None,
         help=(
-            "MediaFire folder: URL (e.g. https://www.mediafire.com/folder/KEY/Name), "
-            "folder key (13 chars), or path (e.g. /Documents). "
-            "Can also be set via MEDIAFIRE_FOLDER."
+            "One or more MediaFire folders: URL, folder key (13 chars), or path. "
+            "Can also set MEDIAFIRE_FOLDER (comma- or newline-separated for multiple)."
         ),
     )
     parser.add_argument(
@@ -142,9 +193,19 @@ def main():
     )
     args = parser.parse_args()
 
-    folder_uri = parse_folder_identifier(args.folder)
-    if not folder_uri:
-        print("Error: No folder specified. Pass a MediaFire URL, folder key, or path.", file=sys.stderr)
+    # Build list of (folder_uri, display_name): from CLI list or MEDIAFIRE_FOLDER (comma/newline separated)
+    if args.folder:
+        raw = ",".join(args.folder) if len(args.folder) > 1 else args.folder[0]
+    else:
+        raw = os.environ.get("MEDIAFIRE_FOLDER", "")
+    folders = parse_folder_identifiers(raw)
+
+    if not folders:
+        print(
+            "Error: No folder specified. Pass one or more MediaFire URLs/keys, or set MEDIAFIRE_FOLDER "
+            "(comma- or newline-separated for multiple).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if not args.email or not args.password:
@@ -166,18 +227,29 @@ def main():
         print("Login failed: {}".format(e), file=sys.stderr)
         sys.exit(1)
 
-    output = os.path.abspath(args.output)
-    if not args.quiet:
-        print("Folder URI: {}".format(folder_uri))
-        print("Output dir: {}".format(output))
+    output_base = os.path.abspath(args.output)
+    verbose = not args.quiet
 
-    try:
-        download_folder(client, folder_uri, output, verbose=not args.quiet)
-    except Exception as e:
-        print("Download failed: {}".format(e), file=sys.stderr)
-        sys.exit(1)
+    for folder_uri, display_name in folders:
+        # Single folder: download into output_base; multiple: output_base/display_name/
+        if len(folders) == 1:
+            local_path = output_base
+            if verbose:
+                print("Folder URI: {}".format(folder_uri))
+                print("Output dir: {}".format(local_path))
+        else:
+            local_path = os.path.join(output_base, display_name)
+            if verbose:
+                print("Folder URI: {}".format(folder_uri))
+                print("Output dir: {}".format(local_path))
 
-    if not args.quiet:
+        try:
+            download_folder(client, folder_uri, local_path, verbose=verbose)
+        except Exception as e:
+            print("Download failed for {}: {}".format(folder_uri, e), file=sys.stderr)
+            sys.exit(1)
+
+    if verbose:
         print("Done.")
 
 
