@@ -1,6 +1,21 @@
 # MediaFire Pull File
 
-ดาวน์โหลดไฟล์จากโฟลเดอร์ MediaFire ลงคอมพิวเตอร์ของคุณ โดยคงโครงสร้างโฟลเดอร์ให้เหมือนต้นทาง รองรับทั้งโฟลเดอร์เดียวและหลายโฟลเดอร์
+**Last updated:** 2025-03-14
+
+ดาวน์โหลดไฟล์จากโฟลเดอร์ MediaFire ลงคอมพิวเตอร์ของคุณ โดยคงโครงสร้างโฟลเดอร์ให้เหมือนต้นทาง รองรับทั้งโฟลเดอร์เดียวและหลายโฟลเดอร์ และดาวน์โหลดแบบหลายเธรด (จำนวนเธรดตามจำนวน CPU)
+
+---
+
+## Updates
+
+| Date       | Change |
+| ---------- | ------ |
+| 2025-03-14 | Multi-threaded download (default: CPU count); `-j` / `--threads` and `MEDIAFIRE_THREADS`. |
+| 2025-03-14 | Multiple folder URLs: comma/newline in `MEDIAFIRE_FOLDER` or multiple CLI args; each folder → subdir under output. |
+| 2025-03-14 | `.env` support via `python-dotenv`; credentials and options from env. |
+| 2025-03-14 | English comments added in `main.py`. |
+
+*(Edit the table above when you change the project.)*
 
 ---
 
@@ -71,6 +86,7 @@ pip install -r requirements.txt
    - `MEDIAFIRE_FOLDER` — URL โฟลเดอร์เริ่มต้นที่จะดาวน์โหลด (ดู [หลายโฟลเดอร์](#หลายโฟลเดอร์))
    - `MEDIAFIRE_OUTPUT` — โฟลเดอร์ปลายทางเริ่มต้น (ค่าเริ่มต้น: `./downloads`)
    - `MEDIAFIRE_APP_ID` — ปล่อยตามเดิม ยกเว้นใช้แอปกำหนดเอง (ค่าเริ่มต้น: `42511`)
+   - `MEDIAFIRE_THREADS` — จำนวนเธรดสำหรับดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)
 
 **ความปลอดภัย:** ไฟล์ `.env` อยู่ใน `.gitignore` ห้าม commit หรือแชร์ เพราะมีรหัสผ่าน
 
@@ -149,6 +165,7 @@ python main.py [FOLDER ...] [OPTIONS]
 | `--email`    | —     | อีเมล MediaFire (แทนที่ `MEDIAFIRE_EMAIL`)                                       | จาก `.env`    |
 | `--password` | —     | รหัสผ่าน MediaFire (แทนที่ `MEDIAFIRE_PASSWORD`)                                 | จาก `.env`    |
 | `--app-id`   | —     | MediaFire App ID                                                                 | `42511`       |
+| `--threads`  | `-j`  | จำนวนเธรดสำหรับดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                            | ตาม CPU       |
 | `--quiet`    | `-q`  | แสดงผลน้อยลง (เฉพาะเมื่อมีข้อผิดพลาด)                                            | ปิด           |
 
 **ตัวอย่าง**
@@ -168,6 +185,9 @@ python main.py "https://..." --email you@example.com --password secret
 
 # โหมดเงียบ
 python main.py -q
+
+# กำหนดจำนวนเธรด (เช่น 8 เธรด)
+python main.py "https://..." -j 8
 ```
 
 ---
@@ -183,6 +203,7 @@ python main.py -q
 | `MEDIAFIRE_FOLDER`   | ไม่    | โฟลเดอร์เริ่มต้น: หนึ่ง URL หรือหลาย URL คั่นด้วย comma หรือขึ้นบรรทัดใหม่ |
 | `MEDIAFIRE_OUTPUT`   | ไม่    | โฟลเดอร์ปลายทางเริ่มต้น                                                    |
 | `MEDIAFIRE_APP_ID`   | ไม่    | MediaFire App ID (ค่าเริ่มต้น: `42511`)                                    |
+| `MEDIAFIRE_THREADS`  | ไม่    | จำนวนเธรดดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                             |
 
 \*จำเป็นสำหรับการดูรายการ/ดาวน์โหลด ตั้งใน `.env` หรือใช้ `--email` / `--password` ก็ได้
 
@@ -192,7 +213,7 @@ python main.py -q
 
 - **การยืนยันตัวตน:** ล็อกอินด้วยอีเมล/รหัสผ่านผ่าน [MediaFire API](https://pypi.org/project/mediafire/)
 - **การดูรายการ:** สำหรับแต่ละโฟลเดอร์ (URL หรือรหัส) จะดึงรายการไฟล์และโฟลเดอร์ย่อยแบบ recursive
-- **การดาวน์โหลด:** ดาวน์โหลดแต่ละไฟล์และสร้างโครงสร้างโฟลเดอร์เดียวกันบนดิสก์
+- **การดาวน์โหลด:** ดาวน์โหลดแต่ละไฟล์และสร้างโครงสร้างโฟลเดอร์เดียวกันบนดิสก์ ใช้หลายเธรด (ค่าเริ่มต้นเท่ากับจำนวน logical CPU) เพื่อเร่งความเร็ว
 - **หลายโฟลเดอร์:** เมื่อส่งหลาย URL แต่ละโฟลเดอร์จะถูกเขียนไปยังโฟลเดอร์ย่อยของ path ปลายทาง (เช่น `./downloads/FolderName1/`, `./downloads/FolderName2/`)
 
 **เทคโนโลยี:** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`

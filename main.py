@@ -3,14 +3,24 @@ MediaFire folder downloader.
 
 Downloads all files from a MediaFire folder (or account path), recreating
 the same directory structure locally. Uses the official mediafire Python SDK.
+
+Supports:
+- Single or multiple folder URLs (comma/newline-separated in env or as CLI args)
+- Multi-threaded downloads (thread count defaults to CPU count)
+- Credentials and options via .env or CLI
 """
 
 from __future__ import print_function
 
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
 import argparse
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
 
 from dotenv import load_dotenv
 from mediafire.client import MediaFireClient, File, Folder
@@ -19,13 +29,20 @@ from mediafire.client import MediaFireClient, File, Folder
 load_dotenv()
 
 
-# MediaFire folder URL pattern: https://www.mediafire.com/folder/<folder_key>/<optional_name>
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+# Regex to extract folder_key from MediaFire folder URL
+# Example: https://www.mediafire.com/folder/<folder_key>/<optional_name>
 MEDIAFIRE_FOLDER_URL_PATTERN = re.compile(
     r"https?://(?:www\.)?mediafire\.com/folder/([a-zA-Z0-9]+)",
     re.IGNORECASE,
 )
 
 
+# ---------------------------------------------------------------------------
+# Folder / path parsing
+# ---------------------------------------------------------------------------
 def parse_folder_identifier(identifier):
     """
     Parse user input into a MediaFire folder URI.
@@ -42,21 +59,21 @@ def parse_folder_identifier(identifier):
     if not identifier:
         return None
 
-    # Already a mediafire URI
+    # Already a MediaFire URI (e.g. mf:abc123 or mf:///Path)
     if identifier.startswith("mf:"):
         return identifier
 
-    # URL: extract folder_key
+    # Full URL: extract folder_key and return mf:<key>
     match = MEDIAFIRE_FOLDER_URL_PATTERN.search(identifier)
     if match:
         folder_key = match.group(1)
         return "mf:{}".format(folder_key)
 
-    # Path-style (root folder by path)
+    # Path-style for account root (e.g. /Documents)
     if identifier.startswith("/"):
         return "mf://" + identifier
 
-    # Assume folder key (13 chars) or path without leading slash
+    # 13-char alphanumeric is treated as folder_key; else as path
     if len(identifier) == 13 and identifier.isalnum():
         return "mf:{}".format(identifier)
 
@@ -64,48 +81,91 @@ def parse_folder_identifier(identifier):
 
 
 def _folder_display_name(identifier, uri, index):
-    """Derive a safe subdir name for a folder (for multi-folder download)."""
-    # From URL path: .../folder/KEY/FolderName -> use FolderName
+    """
+    Derive a safe subdir name for a folder (for multi-folder download).
+    Prefers human-readable name from URL/path; falls back to folder_key or folder_N.
+    """
+    # From URL: .../folder/KEY/FolderName -> use FolderName if present
     match = MEDIAFIRE_FOLDER_URL_PATTERN.search(identifier)
     if match:
-        # URL like https://www.mediafire.com/folder/1z3vk56tf787k/ImageBasedAttendance
         parts = identifier.rstrip("/").split("/")
+        # Last path segment is folder name if it differs from folder_key
         if len(parts) > 0 and parts[-1] and parts[-1] != match.group(1):
             name = parts[-1].strip()
             if name:
                 return _sanitize_dirname(name)
-        return _sanitize_dirname(match.group(1))  # folder key
-    # mf:folderkey or mf:///Path -> use key or last path segment
+        return _sanitize_dirname(match.group(1))  # use folder_key as name
+    # URI is mf:key or mf:key/... -> use key or first segment
     if uri.startswith("mf:"):
         key = uri[3:].split("/")[0]
         return _sanitize_dirname(key) if key else "folder_{}".format(index)
-    # mf:///Path/To/Folder
+    # URI is mf:///Path/To/Folder -> use last path segment
     path = uri.replace("mf://", "").strip("/")
     return _sanitize_dirname(path.split("/")[-1] or "folder_{}".format(index))
 
 
 def _sanitize_dirname(name):
-    """Make a string safe for use as a directory name."""
-    # Remove or replace chars that are invalid in dir names
+    """Make a string safe for use as a directory name (Windows/Unix)."""
     for c in ('/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'):
         name = name.replace(c, "_")
     return name.strip(". ") or "folder"
 
 
+# ---------------------------------------------------------------------------
+# Listing and downloading
+# ---------------------------------------------------------------------------
+def _default_worker_count():
+    """Return default number of download threads (CPU logical cores, or 4 if unknown)."""
+    n = os.cpu_count()
+    return max(1, n) if n is not None else 4
+
+
+def list_all_files(client, folder_uri, local_base_path):
+    """
+    Recursively list all files under a MediaFire folder.
+    Yields (file_uri, local_path) for each file (no download).
+    """
+    os.makedirs(local_base_path, exist_ok=True)
+    for item in client.get_folder_contents_iter(folder_uri):
+        if isinstance(item, File):
+            file_uri = "mf:{}".format(item["quickkey"])
+            filename = item["filename"]
+            local_path = os.path.join(local_base_path, filename)
+            yield (file_uri, local_path)
+        elif isinstance(item, Folder):
+            # Recurse into subfolder and yield all files inside
+            folder_name = item["name"]
+            sub_uri = "mf:{}".format(item["folderkey"])
+            sub_path = os.path.join(local_base_path, folder_name)
+            for file_uri, local_path in list_all_files(client, sub_uri, sub_path):
+                yield (file_uri, local_path)
+
+
+def _download_one_file(client_pool, file_uri, local_path, verbose):
+    """
+    Download a single file using a client from the pool (thread-safe).
+    Borrows a client from the queue, downloads, then returns it.
+    """
+    client = client_pool.get()
+    try:
+        parent = os.path.dirname(local_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        if verbose:
+            print("Downloading: {}".format(local_path))
+        client.download_file(file_uri, local_path)
+    finally:
+        client_pool.put(client)  # always return client to pool
+
+
 def parse_folder_identifiers(raw):
     """
     Parse a string into a list of (folder_uri, display_name) for multi-folder download.
-
-    Supports comma- and newline-separated values. Strips whitespace and skips empty entries.
+    Supports comma- and newline-separated values; strips whitespace and skips empty.
     """
     if not raw or not raw.strip():
         return []
-    # Split by comma and newline, strip, drop empty
-    parts = []
-    for s in re.split(r"[\n,]+", raw):
-        s = s.strip()
-        if s:
-            parts.append(s)
+    parts = [s.strip() for s in re.split(r"[\n,]+", raw) if s.strip()]
     result = []
     for i, identifier in enumerate(parts):
         uri = parse_folder_identifier(identifier)
@@ -115,43 +175,70 @@ def parse_folder_identifiers(raw):
     return result
 
 
-def download_folder(client, folder_uri, local_base_path, verbose=True):
+def download_folder(
+    client,
+    folder_uri,
+    local_base_path,
+    verbose=True,
+    client_pool=None,
+    max_workers=None,
+):
     """
     Recursively download all files from a MediaFire folder into local_base_path,
     creating subdirectories to match the remote structure.
 
-    Args:
-        client: MediaFireClient instance (logged in).
-        folder_uri: MediaFire folder URI (e.g. mf:folderkey or mf:///Path).
-        local_base_path: Local directory path to write files into.
-        verbose: If True, print each file/folder action.
+    If client_pool and max_workers are set, files are downloaded in parallel using
+    a thread pool (one client per worker). Otherwise downloads are sequential.
     """
-    os.makedirs(local_base_path, exist_ok=True)
+    # First pass: list all files recursively (no download yet)
+    file_list = list(list_all_files(client, folder_uri, local_base_path))
 
-    for item in client.get_folder_contents_iter(folder_uri):
-        if isinstance(item, File):
-            file_uri = "mf:{}".format(item["quickkey"])
-            filename = item["filename"]
-            local_path = os.path.join(local_base_path, filename)
+    if not file_list:
+        return
+
+    if client_pool is not None and max_workers is not None and max_workers >= 1:
+        # Parallel: submit each file to thread pool; workers share client pool
+        workers = min(max_workers, len(file_list))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _download_one_file, client_pool, file_uri, local_path, verbose
+                ): (file_uri, local_path)
+                for file_uri, local_path in file_list
+            }
+            for future in as_completed(futures):
+                file_uri, local_path = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    print(
+                        "Error downloading {}: {}".format(local_path, e),
+                        file=sys.stderr,
+                    )
+                    raise
+    else:
+        # Sequential: single client, one file at a time
+        for file_uri, local_path in file_list:
+            parent = os.path.dirname(local_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             if verbose:
                 print("Downloading: {}".format(local_path))
             try:
                 client.download_file(file_uri, local_path)
             except Exception as e:
-                print("Error downloading {}: {}".format(filename, e), file=sys.stderr)
-        elif isinstance(item, Folder):
-            folder_name = item["name"]
-            sub_uri = "mf:{}".format(item["folderkey"])
-            sub_path = os.path.join(local_base_path, folder_name)
-            if verbose:
-                print("Entering folder: {}".format(sub_path))
-            download_folder(client, sub_uri, sub_path, verbose=verbose)
-        else:
-            if verbose:
-                print("Skipping unknown item: {}".format(type(item)), file=sys.stderr)
+                print(
+                    "Error downloading {}: {}".format(os.path.basename(local_path), e),
+                    file=sys.stderr,
+                )
+                raise
 
 
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 def main():
+    """Parse arguments, create client(s), and download each requested folder."""
     parser = argparse.ArgumentParser(
         description="Download all files from a MediaFire folder, preserving directory structure."
     )
@@ -191,9 +278,26 @@ def main():
         default=os.environ.get("MEDIAFIRE_APP_ID", "42511"),
         help="MediaFire App ID (default: 42511). Can set MEDIAFIRE_APP_ID.",
     )
+    # Default thread count from env (optional); None means use CPU count later
+    try:
+        default_threads = os.environ.get("MEDIAFIRE_THREADS")
+        default_t = int(default_threads) if default_threads else None
+    except (TypeError, ValueError):
+        default_t = None
+    parser.add_argument(
+        "-j",
+        "--threads",
+        type=int,
+        default=default_t,
+        metavar="N",
+        help=(
+            "Number of download threads (default: CPU count). "
+            "Set MEDIAFIRE_THREADS or use -j N."
+        ),
+    )
     args = parser.parse_args()
 
-    # Build list of (folder_uri, display_name): from CLI list or MEDIAFIRE_FOLDER (comma/newline separated)
+    # Resolve folder list: CLI args or MEDIAFIRE_FOLDER (comma/newline separated)
     if args.folder:
         raw = ",".join(args.folder) if len(args.folder) > 1 else args.folder[0]
     else:
@@ -216,6 +320,30 @@ def main():
         )
         sys.exit(1)
 
+    verbose = not args.quiet
+    n_workers = args.threads if args.threads is not None else _default_worker_count()
+    n_workers = max(1, n_workers)
+
+    # When using multiple threads, create one logged-in client per worker (thread-safe)
+    client_pool = None
+    if n_workers > 1:
+        client_pool = Queue()
+        for _ in range(n_workers):
+            c = MediaFireClient()
+            try:
+                c.login(
+                    email=args.email,
+                    password=args.password,
+                    app_id=args.app_id,
+                )
+            except Exception as e:
+                print("Login failed: {}".format(e), file=sys.stderr)
+                sys.exit(1)
+            client_pool.put(c)
+        if verbose:
+            print("Using {} download thread(s).".format(n_workers))
+
+    # One client for folder listing and for sequential downloads when n_workers == 1
     client = MediaFireClient()
     try:
         client.login(
@@ -228,10 +356,9 @@ def main():
         sys.exit(1)
 
     output_base = os.path.abspath(args.output)
-    verbose = not args.quiet
 
     for folder_uri, display_name in folders:
-        # Single folder: download into output_base; multiple: output_base/display_name/
+        # One folder -> save directly to output_base; multiple -> output_base/display_name/
         if len(folders) == 1:
             local_path = output_base
             if verbose:
@@ -244,7 +371,14 @@ def main():
                 print("Output dir: {}".format(local_path))
 
         try:
-            download_folder(client, folder_uri, local_path, verbose=verbose)
+            download_folder(
+                client,
+                folder_uri,
+                local_path,
+                verbose=verbose,
+                client_pool=client_pool,
+                max_workers=n_workers if client_pool else None,
+            )
         except Exception as e:
             print("Download failed for {}: {}".format(folder_uri, e), file=sys.stderr)
             sys.exit(1)
