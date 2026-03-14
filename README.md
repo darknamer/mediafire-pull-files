@@ -2,20 +2,21 @@
 
 **Last updated:** 2025-03-14
 
-ดาวน์โหลดไฟล์จากโฟลเดอร์ MediaFire ลงคอมพิวเตอร์ของคุณ โดยคงโครงสร้างโฟลเดอร์ให้เหมือนต้นทาง รองรับทั้งโฟลเดอร์เดียวและหลายโฟลเดอร์ และดาวน์โหลดแบบหลายเธรด (จำนวนเธรดตามจำนวน CPU)
+ดาวน์โหลดไฟล์จากโฟลเดอร์ MediaFire ลงคอมพิวเตอร์ของคุณ โดยคงโครงสร้างโฟลเดอร์ให้เหมือนต้นทาง รองรับทั้งโฟลเดอร์เดียวและหลายโฟลเดอร์ ดาวน์โหลดแบบหลายเธรด (จำนวนเธรดตามจำนวน CPU) และรองรับทั้งลิงก์ direct_download และ normal_download (เมื่อได้หน้า HTML จะดึง URL ไฟล์จริงจากในหน้านั้น)
 
 ---
 
 ## Updates
 
-| Date       | Change |
-| ---------- | ------ |
-| 2025-03-14 | Multi-threaded download (default: CPU count); `-j` / `--threads` and `MEDIAFIRE_THREADS`. |
-| 2025-03-14 | Multiple folder URLs: comma/newline in `MEDIAFIRE_FOLDER` or multiple CLI args; each folder → subdir under output. |
-| 2025-03-14 | `.env` support via `python-dotenv`; credentials and options from env. |
-| 2025-03-14 | English comments added in `main.py`. |
+| Date       | Change                                                                                                                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2025-03-14 | Download: รองรับทั้ง `direct_download` และ `normal_download` ถ้า API คืนแค่ normal_download และได้หน้า HTML จะ parse หา URL ไฟล์จริง (download\*.mediafire.com) แล้วดาวน์โหลดต่อ ตรวจ hash (SHA-256) หลังดาวน์โหลด |
+| 2025-03-14 | Multi-threaded download (default: CPU count); `-j` / `--threads` and `MEDIAFIRE_THREADS`.                                                                                                                          |
+| 2025-03-14 | Multiple folder URLs: comma/newline in `MEDIAFIRE_FOLDER` or multiple CLI args; each folder → subdir under output.                                                                                                 |
+| 2025-03-14 | `.env` support via `python-dotenv`; credentials and options from env.                                                                                                                                              |
+| 2025-03-14 | English comments added in `main.py`.                                                                                                                                                                               |
 
-*(Edit the table above when you change the project.)*
+_(Edit the table above when you change the project.)_
 
 ---
 
@@ -165,7 +166,7 @@ python main.py [FOLDER ...] [OPTIONS]
 | `--email`    | —     | อีเมล MediaFire (แทนที่ `MEDIAFIRE_EMAIL`)                                       | จาก `.env`    |
 | `--password` | —     | รหัสผ่าน MediaFire (แทนที่ `MEDIAFIRE_PASSWORD`)                                 | จาก `.env`    |
 | `--app-id`   | —     | MediaFire App ID                                                                 | `42511`       |
-| `--threads`  | `-j`  | จำนวนเธรดสำหรับดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                            | ตาม CPU       |
+| `--threads`  | `-j`  | จำนวนเธรดสำหรับดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                             | ตาม CPU       |
 | `--quiet`    | `-q`  | แสดงผลน้อยลง (เฉพาะเมื่อมีข้อผิดพลาด)                                            | ปิด           |
 
 **ตัวอย่าง**
@@ -214,9 +215,10 @@ python main.py "https://..." -j 8
 - **การยืนยันตัวตน:** ล็อกอินด้วยอีเมล/รหัสผ่านผ่าน [MediaFire API](https://pypi.org/project/mediafire/)
 - **การดูรายการ:** สำหรับแต่ละโฟลเดอร์ (URL หรือรหัส) จะดึงรายการไฟล์และโฟลเดอร์ย่อยแบบ recursive
 - **การดาวน์โหลด:** ดาวน์โหลดแต่ละไฟล์และสร้างโครงสร้างโฟลเดอร์เดียวกันบนดิสก์ ใช้หลายเธรด (ค่าเริ่มต้นเท่ากับจำนวน logical CPU) เพื่อเร่งความเร็ว
+- **ลิงก์ดาวน์โหลด:** ใช้ `direct_download` จาก API ก่อน ถ้าไม่มีจะลอง `normal_download` ถ้าได้หน้า HTML จะ parse หา URL ตรง (รูปแบบ `download*.mediafire.com`) แล้วดาวน์โหลดจาก URL นั้น หลังดาวน์โหลดจะตรวจสอบ SHA-256 กับค่าจาก API ถ้าไม่ตรงจะลบไฟล์และแจ้ง error
 - **หลายโฟลเดอร์:** เมื่อส่งหลาย URL แต่ละโฟลเดอร์จะถูกเขียนไปยังโฟลเดอร์ย่อยของ path ปลายทาง (เช่น `./downloads/FolderName1/`, `./downloads/FolderName2/`)
 
-**เทคโนโลยี:** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`
+**เทคโนโลยี:** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK, [requests](https://pypi.org/project/requests/) สำหรับ streaming download, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`
 
 ---
 
@@ -224,7 +226,7 @@ python main.py "https://..." -j 8
 
 ```text
 mediafire_pull_file/
-├── main.py           # จุดเข้า CLI และ logic การดาวน์โหลด
+├── main.py           # จุดเข้า CLI, logic ดาวน์โหลด (direct/normal_download, parse HTML)
 ├── requirements.txt  # mediafire, requests, python-dotenv
 ├── .env.example      # ตัวอย่าง .env (คัดลอกเป็น .env)
 ├── .env              # ข้อมูลล็อกอินของคุณ (สร้างจาก .env.example ห้าม commit)
