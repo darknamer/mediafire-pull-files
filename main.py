@@ -258,7 +258,12 @@ def _download_one_file(client_pool, file_uri, local_path, verbose):
     """
     Download a single file using a client from the pool (thread-safe).
     Borrows a client from the queue, downloads, then returns it.
+    Skips if the file already exists on disk.
     """
+    if os.path.isfile(local_path):
+        if verbose:
+            print("Skipping (exists): {}".format(local_path))
+        return
     client = client_pool.get()
     try:
         parent = os.path.dirname(local_path)
@@ -332,6 +337,10 @@ def download_folder(
     else:
         # Sequential: single client, one file at a time
         for file_uri, local_path in file_list:
+            if os.path.isfile(local_path):
+                if verbose:
+                    print("Skipping (exists): {}".format(local_path))
+                continue
             parent = os.path.dirname(local_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
