@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import sys
+from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from queue import Queue
@@ -56,6 +57,13 @@ MEDIAFIRE_DIRECT_URL_IN_HTML = re.compile(
 # Log file name format: log-{yyyy}{MM}{dd}.log (e.g. log-20250314.log)
 def _default_log_filename():
     return "log-{}.log".format(date.today().strftime("%Y%m%d"))
+
+
+# Summary of a single download run: total, success (downloaded + skipped), failed, list of (path, error)
+DownloadSummary = namedtuple(
+    "DownloadSummary",
+    ["total", "success", "downloaded", "skipped", "failed", "failed_list"],
+)
 
 
 logger = logging.getLogger(__name__)
@@ -310,11 +318,14 @@ def _download_one_file(client_pool, file_uri, local_path, verbose):
     Download a single file using a client from the pool (thread-safe).
     Borrows a client from the queue, downloads, then returns it.
     Skips if the file already exists on disk.
+
+    Returns:
+        tuple: (status, local_path, error_msg). status is "downloaded" | "skipped" | "failed".
     """
     if os.path.isfile(local_path):
         if verbose:
             logger.info("Skipping (exists): %s", local_path)
-        return
+        return ("skipped", local_path, None)
     client = client_pool.get()
     try:
         parent = os.path.dirname(local_path)
@@ -323,6 +334,9 @@ def _download_one_file(client_pool, file_uri, local_path, verbose):
         if verbose:
             logger.info("Downloading: %s", local_path)
         _download_file_safe(client, file_uri, local_path)
+        return ("downloaded", local_path, None)
+    except Exception as e:
+        return ("failed", local_path, str(e))
     finally:
         client_pool.put(client)  # always return client to pool
 
@@ -358,12 +372,21 @@ def download_folder(
 
     If client_pool and max_workers are set, files are downloaded in parallel using
     a thread pool (one client per worker). Otherwise downloads are sequential.
+
+    Returns:
+        DownloadSummary: total, success (downloaded+skipped), downloaded, skipped, failed, failed_list.
     """
     # First pass: list all files recursively (no download yet)
     file_list = list(list_all_files(client, folder_uri, local_base_path))
 
     if not file_list:
-        return
+        return DownloadSummary(
+            total=0, success=0, downloaded=0, skipped=0, failed=0, failed_list=[]
+        )
+
+    downloaded = 0
+    skipped = 0
+    failed_list = []  # list of (local_path, error_msg)
 
     if client_pool is not None and max_workers is not None and max_workers >= 1:
         # Parallel: submit each file to thread pool; workers share client pool
@@ -378,16 +401,24 @@ def download_folder(
             for future in as_completed(futures):
                 file_uri, local_path = futures[future]
                 try:
-                    future.result()
+                    status, path, err = future.result()
+                    if status == "downloaded":
+                        downloaded += 1
+                    elif status == "skipped":
+                        skipped += 1
+                    else:
+                        failed_list.append((path, err or "Unknown error"))
+                        logger.error("Error downloading %s: %s", path, err)
                 except Exception as e:
+                    failed_list.append((local_path, str(e)))
                     logger.error("Error downloading %s: %s", local_path, e)
-                    raise
     else:
         # Sequential: single client, one file at a time
         for file_uri, local_path in file_list:
             if os.path.isfile(local_path):
                 if verbose:
                     logger.info("Skipping (exists): %s", local_path)
+                skipped += 1
                 continue
             parent = os.path.dirname(local_path)
             if parent:
@@ -396,9 +427,46 @@ def download_folder(
                 logger.info("Downloading: %s", local_path)
             try:
                 _download_file_safe(client, file_uri, local_path)
+                downloaded += 1
             except Exception as e:
+                failed_list.append((local_path, str(e)))
                 logger.error("Error downloading %s: %s", os.path.basename(local_path), e)
-                raise
+
+    total = len(file_list)
+    success = downloaded + skipped
+    failed = len(failed_list)
+    return DownloadSummary(
+        total=total,
+        success=success,
+        downloaded=downloaded,
+        skipped=skipped,
+        failed=failed,
+        failed_list=failed_list,
+    )
+
+
+def _format_and_log_summary(summary, verbose=True):
+    """
+    Print and log download summary (success/fail counts and failed file list).
+    Writes to logger so it appears in log file; when verbose, also on console.
+    """
+    lines = [
+        "--- Download Summary ---",
+        "Total files: {}".format(summary.total),
+        "Success: {} ({} downloaded, {} skipped - already existed)".format(
+            summary.success, summary.downloaded, summary.skipped
+        ),
+        "Failed: {}".format(summary.failed),
+    ]
+    if summary.failed_list:
+        lines.append("Failed files:")
+        for path, err in summary.failed_list:
+            lines.append("  {}: {}".format(path, err))
+    lines.append("----------------------")
+
+    msg = "\n".join(lines)
+    # INFO goes to log file; when verbose, also to console
+    logger.info(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +598,13 @@ def main():
 
     output_base = os.path.abspath(args.output)
 
+    # Accumulate summary across all folders
+    total_downloaded = 0
+    total_skipped = 0
+    total_failed = 0
+    all_failed_list = []
+    total_files = 0
+
     for folder_uri, display_name in folders:
         # One folder -> save directly to output_base; multiple -> output_base/display_name/
         if len(folders) == 1:
@@ -544,7 +619,7 @@ def main():
                 logger.info("Output dir: %s", local_path)
 
         try:
-            download_folder(
+            summary = download_folder(
                 client,
                 folder_uri,
                 local_path,
@@ -552,12 +627,28 @@ def main():
                 client_pool=client_pool,
                 max_workers=n_workers if client_pool else None,
             )
+            total_files += summary.total
+            total_downloaded += summary.downloaded
+            total_skipped += summary.skipped
+            total_failed += summary.failed
+            all_failed_list.extend(summary.failed_list)
         except Exception as e:
             logger.error("Download failed for %s: %s", folder_uri, e)
             sys.exit(1)
 
-    if verbose:
-        logger.info("Done.")
+    # Print and log summarization before exit
+    overall = DownloadSummary(
+        total=total_files,
+        success=total_downloaded + total_skipped,
+        downloaded=total_downloaded,
+        skipped=total_skipped,
+        failed=total_failed,
+        failed_list=all_failed_list,
+    )
+    _format_and_log_summary(overall, verbose=verbose)
+
+    if total_failed > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

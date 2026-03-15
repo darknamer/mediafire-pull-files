@@ -382,6 +382,10 @@ def test_main_exits_when_no_credentials(capsys):
 def test_main_success_with_mocked_client(mock_client_class, mock_download, tmp_path):
     mock_client = MagicMock()
     mock_client_class.return_value = mock_client
+    # main() expects download_folder to return a DownloadSummary
+    mock_download.return_value = main_module.DownloadSummary(
+        total=1, success=1, downloaded=1, skipped=0, failed=0, failed_list=[]
+    )
     out = str(tmp_path / "out")
     log_file = str(tmp_path / "log.txt")
     with patch.object(sys, "argv", [
@@ -399,3 +403,22 @@ def test_main_success_with_mocked_client(mock_client_class, mock_download, tmp_p
     call_kw = mock_download.call_args[1]
     assert call_kw["verbose"] is False
     assert call_kw["client_pool"] is None
+
+
+@patch("main.download_folder")
+@patch("main.MediaFireClient")
+def test_main_exits_1_when_downloads_fail(mock_client_class, mock_download, tmp_path):
+    mock_client = MagicMock()
+    mock_client_class.return_value = mock_client
+    mock_download.return_value = main_module.DownloadSummary(
+        total=2, success=1, downloaded=1, skipped=0, failed=1,
+        failed_list=[("/path/to/file.txt", "Connection error")],
+    )
+    with patch.object(sys, "argv", [
+        "main.py", "https://www.mediafire.com/folder/abc123/x",
+        "-o", str(tmp_path / "out"), "-q", "-l", str(tmp_path / "log.txt"), "-j", "1",
+    ]):
+        with patch.dict(os.environ, {"MEDIAFIRE_EMAIL": "u@test.com", "MEDIAFIRE_PASSWORD": "pw"}, clear=False):
+            with pytest.raises(SystemExit) as exc:
+                main_module.main()
+            assert exc.value.code == 1

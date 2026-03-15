@@ -10,6 +10,7 @@
 
 | Date       | Change                                                                                                                                                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-03-15 | Download summarization: script prints and logs success/fail counts and failed file list before exit; continues on per-file errors; exit code 1 if any download failed.                                              |
 | 2026-03-15 | GitHub Actions CI: `.github/workflows/test.yml` — run unit tests on push/PR (Python 3.9–3.12); README updated with CI section and project structure.                                                                  |
 | 2026-03-15 | Unit tests (pytest) and coverage (pytest-cov) added; `tests/test_main.py`; `requirements-dev.txt`; README updated with Testing section. No changes to `main.py` logic.                                                |
 | 2025-03-14 | Download: รองรับทั้ง `direct_download` และ `normal_download` ถ้า API คืนแค่ normal_download และได้หน้า HTML จะ parse หา URL ไฟล์จริง (download\*.mediafire.com) แล้วดาวน์โหลดต่อ ตรวจ hash (SHA-256) หลังดาวน์โหลด |
@@ -172,7 +173,27 @@ python main.py [FOLDER ...] [OPTIONS]
 | `--quiet`    | `-q`  | แสดงผลน้อยลง (เฉพาะเมื่อมีข้อผิดพลาด)                                            | ปิด           |
 | `--log-file` | `-l`  | path ไฟล์ log (ข้อความทั้งหมดจะเขียนลงไฟล์นี้ด้วย)                               | `log-YYYYMMDD.log` |
 
-**ตัวอย่าง**
+### สรุปผลก่อนจบ (Summary before exit)
+
+ก่อนจบการทำงาน สคริปต์จะแสดงและบันทึกลงไฟล์ log สรุปผลในรูปแบบดังนี้:
+
+```text
+--- Download Summary ---
+Total files: 10
+Success: 8 (7 downloaded, 1 skipped - already existed)
+Failed: 2
+Failed files:
+  /path/to/file1.zip: Connection error
+  /path/to/file2.pdf: Hash mismatch (...)
+----------------------
+```
+
+- **Total files:** จำนวนไฟล์ทั้งหมดในโฟลเดอร์ที่ดาวน์โหลด
+- **Success:** จำนวนที่สำเร็จ (ดาวน์โหลดใหม่ + ข้ามเพราะมีอยู่แล้ว)
+- **Failed:** จำนวนที่ล้มเหลว พร้อมรายการ path และข้อความ error
+- ถ้ามีอย่างน้อยหนึ่งไฟล์ล้มเหลว สคริปต์จะจบด้วย **exit code 1**
+
+**ตัวอย่างคำสั่ง**
 
 ```bash
 # โฟลเดอร์เดียว ค่า output เริ่มต้น
@@ -222,8 +243,9 @@ python main.py "https://..." -j 8
 - **ลิงก์ดาวน์โหลด:** ใช้ `direct_download` จาก API ก่อน ถ้าไม่มีจะลอง `normal_download` ถ้าได้หน้า HTML จะ parse หา URL ตรง (รูปแบบ `download*.mediafire.com`) แล้วดาวน์โหลดจาก URL นั้น หลังดาวน์โหลดจะตรวจสอบ SHA-256 กับค่าจาก API ถ้าไม่ตรงจะลบไฟล์และแจ้ง error
 - **หลายโฟลเดอร์:** เมื่อส่งหลาย URL แต่ละโฟลเดอร์จะถูกเขียนไปยังโฟลเดอร์ย่อยของ path ปลายทาง (เช่น `./downloads/FolderName1/`, `./downloads/FolderName2/`)
 - **Log:** ข้อความจากกระบวนการหลัก (โฟลเดอร์, การดาวน์โหลด, ข้ามไฟล์ที่มีอยู่, error) จะเขียนลงไฟล์ log (ชื่อตามวัน: `log-YYYYMMDD.log` หรือกำหนด path ด้วย `-l` / `--log-file` / `MEDIAFIRE_LOG_FILE`)
+- **สรุปผล (Summarization):** ก่อนจบการทำงาน สคริปต์จะพิมพ์และบันทึกลงไฟล์ log สรุปผลดาวน์โหลด: จำนวนไฟล์ทั้งหมด, สำเร็จ (ดาวน์โหลดใหม่ + ข้ามที่มีอยู่แล้ว), ล้มเหลว และรายการไฟล์ที่ล้มเหลวพร้อมข้อความ error ถ้ามีการดาวน์โหลดล้มเหลวอย่างน้อยหนึ่งไฟล์ สคริปต์จะจบด้วย exit code 1
 
-**เทคโนโลยี:** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK, [requests](https://pypi.org/project/requests/) สำหรับ streaming download, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`
+**เทคโนโลยี (Tech stack):** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK สำหรับ API และการดาวน์โหลด, [requests](https://pypi.org/project/requests/) สำหรับ streaming download, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`
 
 ---
 
@@ -271,7 +293,7 @@ pytest tests/ --cov=main --cov-report=html
 - **list_all_files** — รายการไฟล์ (รวม subfolder) ด้วย mock client
 - **_download_file_safe** — ดาวน์โหลดไฟล์ด้วย mock client และ requests
 - **download_folder** — โฟลเดอร์ว่าง, ข้ามไฟล์ที่มีอยู่แล้ว
-- **main()** — CLI: ไม่มีโฟลเดอร์/ไม่มี credentials → exit 1; มี folder + credentials + mock client → เรียก download_folder
+- **main()** — CLI: ไม่มีโฟลเดอร์/ไม่มี credentials → exit 1; มี folder + credentials + mock client → เรียก download_folder และแสดงสรุปผล; มี failed downloads → exit 1
 
 ### GitHub Actions (CI)
 
