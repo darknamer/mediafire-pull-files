@@ -273,6 +273,7 @@ def _download_file_safe(client, file_uri, local_path):
     else:
         direct_url = None  # already have binary response
 
+    # File integrity: compute SHA-256 of downloaded content and compare with server hash
     checksum = hashlib.sha256()
     with open(local_path, "wb") as out_fd:
         for chunk in response.iter_content(chunk_size=65536):
@@ -280,14 +281,23 @@ def _download_file_safe(client, file_uri, local_path):
                 out_fd.write(chunk)
                 checksum.update(chunk)
 
-    checksum_hex = checksum.hexdigest().lower()
-    if checksum_hex != resource["hash"]:
-        try:
-            os.remove(local_path)
-        except OSError:
-            pass
-        raise MediaFireDownloadError(
-            "Hash mismatch ({} != {})".format(resource["hash"], checksum_hex)
+    local_hash = checksum.hexdigest().lower()
+    server_hash = resource.get("hash")
+    if server_hash is not None and str(server_hash).strip():
+        server_hash = str(server_hash).strip().lower()
+        if local_hash != server_hash:
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
+            raise MediaFireDownloadError(
+                "Hash mismatch: server={} local={}".format(server_hash, local_hash)
+            )
+    else:
+        logger.warning(
+            "No server hash for %s; skipping integrity check (local SHA-256: %s)",
+            os.path.basename(local_path),
+            local_hash,
         )
 
 
@@ -313,25 +323,53 @@ def list_all_files(client, folder_uri, local_base_path):
                 yield (file_uri, local_path)
 
 
+def _existing_file_matches_server(client, file_uri, local_path):
+    """
+    Return True if local_path exists and its SHA-256 matches the server's hash.
+    Return False if file does not exist, server has no hash, or hashes differ (re-download).
+    """
+    if not os.path.isfile(local_path):
+        return False
+    try:
+        resource = client.get_resource_by_uri(file_uri)
+        if not isinstance(resource, File):
+            return False
+        server_hash = resource.get("hash")
+        if not server_hash or not str(server_hash).strip():
+            return False
+        server_hash = str(server_hash).strip().lower()
+        h = hashlib.sha256()
+        with open(local_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest().lower() == server_hash
+    except Exception:
+        return False
+
+
 def _download_one_file(client_pool, file_uri, local_path, verbose):
     """
     Download a single file using a client from the pool (thread-safe).
     Borrows a client from the queue, downloads, then returns it.
-    Skips if the file already exists on disk.
+    Skips only if the file already exists and its hash matches the server;
+    otherwise downloads (overwrites) so that hash mismatch is corrected.
 
     Returns:
         tuple: (status, local_path, error_msg). status is "downloaded" | "skipped" | "failed".
     """
-    if os.path.isfile(local_path):
-        if verbose:
-            logger.info("Skipping (exists): %s", local_path)
-        return ("skipped", local_path, None)
     client = client_pool.get()
     try:
+        if os.path.isfile(local_path):
+            if _existing_file_matches_server(client, file_uri, local_path):
+                if verbose:
+                    logger.info("Skipping (exists, hash OK): %s", local_path)
+                return ("skipped", local_path, None)
+            if verbose:
+                logger.info("Re-downloading (exists but hash mismatch): %s", local_path)
         parent = os.path.dirname(local_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        if verbose:
+        if verbose and not os.path.isfile(local_path):
             logger.info("Downloading: %s", local_path)
         _download_file_safe(client, file_uri, local_path)
         return ("downloaded", local_path, None)
@@ -416,14 +454,17 @@ def download_folder(
         # Sequential: single client, one file at a time
         for file_uri, local_path in file_list:
             if os.path.isfile(local_path):
+                if _existing_file_matches_server(client, file_uri, local_path):
+                    if verbose:
+                        logger.info("Skipping (exists, hash OK): %s", local_path)
+                    skipped += 1
+                    continue
                 if verbose:
-                    logger.info("Skipping (exists): %s", local_path)
-                skipped += 1
-                continue
+                    logger.info("Re-downloading (exists but hash mismatch): %s", local_path)
             parent = os.path.dirname(local_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
-            if verbose:
+            if verbose and not os.path.isfile(local_path):
                 logger.info("Downloading: %s", local_path)
             try:
                 _download_file_safe(client, file_uri, local_path)

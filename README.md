@@ -10,9 +10,11 @@
 
 | Date       | Change                                                                                                                                                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-03-15 | Download summarization: script prints and logs success/fail counts and failed file list before exit; continues on per-file errors; exit code 1 if any download failed.                                              |
-| 2026-03-15 | GitHub Actions CI: `.github/workflows/test.yml` — run unit tests on push/PR (Python 3.9–3.12); README updated with CI section and project structure.                                                                  |
-| 2026-03-15 | Unit tests (pytest) and coverage (pytest-cov) added; `tests/test_main.py`; `requirements-dev.txt`; README updated with Testing section. No changes to `main.py` logic.                                                |
+| 2026-03-15 | If file already exists: compare local SHA-256 with server hash; only skip when equal; if server hash missing or hashes differ, re-download (overwrite) so corrupted or outdated local files are replaced.          |
+| 2026-03-15 | File integrity: SHA-256 checksum verification after each download; compare local file hash with MediaFire API `hash`; on mismatch remove file and report error; if API omits hash, skip verification with warning. |
+| 2026-03-15 | Download summarization: script prints and logs success/fail counts and failed file list before exit; continues on per-file errors; exit code 1 if any download failed.                                             |
+| 2026-03-15 | GitHub Actions CI: `.github/workflows/test.yml` — run unit tests on push/PR (Python 3.9–3.12); README updated with CI section and project structure.                                                               |
+| 2026-03-15 | Unit tests (pytest) and coverage (pytest-cov) added; `tests/test_main.py`; `requirements-dev.txt`; README updated with Testing section. No changes to `main.py` logic.                                             |
 | 2025-03-14 | Download: รองรับทั้ง `direct_download` และ `normal_download` ถ้า API คืนแค่ normal_download และได้หน้า HTML จะ parse หา URL ไฟล์จริง (download\*.mediafire.com) แล้วดาวน์โหลดต่อ ตรวจ hash (SHA-256) หลังดาวน์โหลด |
 | 2025-03-14 | Multi-threaded download (default: CPU count); `-j` / `--threads` and `MEDIAFIRE_THREADS`.                                                                                                                          |
 | 2025-03-14 | Multiple folder URLs: comma/newline in `MEDIAFIRE_FOLDER` or multiple CLI args; each folder → subdir under output.                                                                                                 |
@@ -162,15 +164,15 @@ python main.py
 python main.py [FOLDER ...] [OPTIONS]
 ```
 
-| ตัวเลือก     | Short | คำอธิบาย                                                                         | ค่าเริ่มต้น   |
-| ------------ | ----- | -------------------------------------------------------------------------------- | ------------- |
-| `FOLDER`     | —     | URL/รหัส/path โฟลเดอร์หนึ่งหรือมากกว่า ไม่ใส่จะใช้ `MEDIAFIRE_FOLDER` จาก `.env` | —             |
-| `--output`   | `-o`  | โฟลเดอร์ที่ใช้เก็บไฟล์                                                           | `./downloads` |
-| `--email`    | —     | อีเมล MediaFire (แทนที่ `MEDIAFIRE_EMAIL`)                                       | จาก `.env`    |
-| `--password` | —     | รหัสผ่าน MediaFire (แทนที่ `MEDIAFIRE_PASSWORD`)                                 | จาก `.env`    |
-| `--app-id`   | —     | MediaFire App ID                                                                 | `42511`       |
-| `--threads`  | `-j`  | จำนวนเธรดสำหรับดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                             | ตาม CPU       |
-| `--quiet`    | `-q`  | แสดงผลน้อยลง (เฉพาะเมื่อมีข้อผิดพลาด)                                            | ปิด           |
+| ตัวเลือก     | Short | คำอธิบาย                                                                         | ค่าเริ่มต้น        |
+| ------------ | ----- | -------------------------------------------------------------------------------- | ------------------ |
+| `FOLDER`     | —     | URL/รหัส/path โฟลเดอร์หนึ่งหรือมากกว่า ไม่ใส่จะใช้ `MEDIAFIRE_FOLDER` จาก `.env` | —                  |
+| `--output`   | `-o`  | โฟลเดอร์ที่ใช้เก็บไฟล์                                                           | `./downloads`      |
+| `--email`    | —     | อีเมล MediaFire (แทนที่ `MEDIAFIRE_EMAIL`)                                       | จาก `.env`         |
+| `--password` | —     | รหัสผ่าน MediaFire (แทนที่ `MEDIAFIRE_PASSWORD`)                                 | จาก `.env`         |
+| `--app-id`   | —     | MediaFire App ID                                                                 | `42511`            |
+| `--threads`  | `-j`  | จำนวนเธรดสำหรับดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                             | ตาม CPU            |
+| `--quiet`    | `-q`  | แสดงผลน้อยลง (เฉพาะเมื่อมีข้อผิดพลาด)                                            | ปิด                |
 | `--log-file` | `-l`  | path ไฟล์ log (ข้อความทั้งหมดจะเขียนลงไฟล์นี้ด้วย)                               | `log-YYYYMMDD.log` |
 
 ### สรุปผลก่อนจบ (Summary before exit)
@@ -229,7 +231,7 @@ python main.py "https://..." -j 8
 | `MEDIAFIRE_OUTPUT`   | ไม่    | โฟลเดอร์ปลายทางเริ่มต้น                                                    |
 | `MEDIAFIRE_APP_ID`   | ไม่    | MediaFire App ID (ค่าเริ่มต้น: `42511`)                                    |
 | `MEDIAFIRE_THREADS`  | ไม่    | จำนวนเธรดดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                             |
-| `MEDIAFIRE_LOG_FILE` | ไม่    | path ไฟล์ log (ค่าเริ่มต้น: `log-YYYYMMDD.log` ตามวันที่รัน)                |
+| `MEDIAFIRE_LOG_FILE` | ไม่    | path ไฟล์ log (ค่าเริ่มต้น: `log-YYYYMMDD.log` ตามวันที่รัน)               |
 
 \*จำเป็นสำหรับการดูรายการ/ดาวน์โหลด ตั้งใน `.env` หรือใช้ `--email` / `--password` ก็ได้
 
@@ -240,12 +242,23 @@ python main.py "https://..." -j 8
 - **การยืนยันตัวตน:** ล็อกอินด้วยอีเมล/รหัสผ่านผ่าน [MediaFire API](https://pypi.org/project/mediafire/)
 - **การดูรายการ:** สำหรับแต่ละโฟลเดอร์ (URL หรือรหัส) จะดึงรายการไฟล์และโฟลเดอร์ย่อยแบบ recursive
 - **การดาวน์โหลด:** ดาวน์โหลดแต่ละไฟล์และสร้างโครงสร้างโฟลเดอร์เดียวกันบนดิสก์ ใช้หลายเธรด (ค่าเริ่มต้นเท่ากับจำนวน logical CPU) เพื่อเร่งความเร็ว
-- **ลิงก์ดาวน์โหลด:** ใช้ `direct_download` จาก API ก่อน ถ้าไม่มีจะลอง `normal_download` ถ้าได้หน้า HTML จะ parse หา URL ตรง (รูปแบบ `download*.mediafire.com`) แล้วดาวน์โหลดจาก URL นั้น หลังดาวน์โหลดจะตรวจสอบ SHA-256 กับค่าจาก API ถ้าไม่ตรงจะลบไฟล์และแจ้ง error
+- **ลิงก์ดาวน์โหลด:** ใช้ `direct_download` จาก API ก่อน ถ้าไม่มีจะลอง `normal_download` ถ้าได้หน้า HTML จะ parse หา URL ตรง (รูปแบบ `download*.mediafire.com`) แล้วดาวน์โหลดจาก URL นั้น
+- **ความถูกต้องของไฟล์ (checksum / hash):** หลังดาวน์โหลดทุกไฟล์จะตรวจสอบความตรงกันของ checksum — ใช้ค่า **SHA-256** จาก MediaFire API (ฟิลด์ `hash` ของไฟล์) เทียบกับ SHA-256 ที่คำนวณจากเนื้อไฟล์ที่ดาวน์โหลด ถ้าตรงกันถือว่าถูกต้อง ถ้าไม่ตรงจะลบไฟล์ที่ดาวน์โหลดและแจ้ง error (รวมในสรุป Failed) ถ้า API ไม่ส่งค่า hash มา จะข้ามการตรวจสอบและบันทึก warning (ไฟล์ยังคงอยู่)
+- **เมื่อไฟล์มีอยู่แล้ว:** ถ้าไฟล์ในเครื่องมีอยู่แล้ว จะเทียบ hash กับเซิร์ฟเวอร์ — ตรงกันจึงข้าม (skip) ถ้าเซิร์ฟเวอร์ไม่มี hash หรือ hash ไม่ตรง จะดาวน์โหลดใหม่ทับไฟล์เดิม (re-download) เพื่อให้ไฟล์เสียหรือเวอร์ชันเก่าถูกแทนที่
 - **หลายโฟลเดอร์:** เมื่อส่งหลาย URL แต่ละโฟลเดอร์จะถูกเขียนไปยังโฟลเดอร์ย่อยของ path ปลายทาง (เช่น `./downloads/FolderName1/`, `./downloads/FolderName2/`)
 - **Log:** ข้อความจากกระบวนการหลัก (โฟลเดอร์, การดาวน์โหลด, ข้ามไฟล์ที่มีอยู่, error) จะเขียนลงไฟล์ log (ชื่อตามวัน: `log-YYYYMMDD.log` หรือกำหนด path ด้วย `-l` / `--log-file` / `MEDIAFIRE_LOG_FILE`)
 - **สรุปผล (Summarization):** ก่อนจบการทำงาน สคริปต์จะพิมพ์และบันทึกลงไฟล์ log สรุปผลดาวน์โหลด: จำนวนไฟล์ทั้งหมด, สำเร็จ (ดาวน์โหลดใหม่ + ข้ามที่มีอยู่แล้ว), ล้มเหลว และรายการไฟล์ที่ล้มเหลวพร้อมข้อความ error ถ้ามีการดาวน์โหลดล้มเหลวอย่างน้อยหนึ่งไฟล์ สคริปต์จะจบด้วย exit code 1
 
-**เทคโนโลยี (Tech stack):** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK สำหรับ API และการดาวน์โหลด, [requests](https://pypi.org/project/requests/) สำหรับ streaming download, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`
+**ความถูกต้องของไฟล์ (File integrity / checksum):**
+
+- MediaFire API ส่งค่า **hash** (SHA-256) ของไฟล์ในฟิลด์ `hash` ของ File resource
+- หลังดาวน์โหลด สคริปต์คำนวณ SHA-256 ของเนื้อไฟล์ที่ได้ แล้วเทียบกับค่า hash จากเซิร์ฟเวอร์ (normalize เป็นตัวพิมพ์เล็ก)
+- **ตรงกัน:** เก็บไฟล์ไว้
+- **ไม่ตรงกัน:** ลบไฟล์ที่ดาวน์โหลด แล้ว raise error (แสดงในสรุป Failed)
+- **ไม่มี hash จาก API:** ข้ามการตรวจสอบ แสดง warning และบันทึก SHA-256 ของไฟล์ท้องถิ่นลง log (ไฟล์ยังคงอยู่)
+- **ไฟล์มีอยู่แล้ว:** ถ้ามีไฟล์ใน path ปลายทางแล้ว จะเรียก API เพื่อเอา hash ของเซิร์ฟเวอร์มาเทียบกับ SHA-256 ของไฟล์ท้องถิ่น ตรงกัน → ข้าม (skip) ไม่ตรงหรือเซิร์ฟเวอร์ไม่มี hash → ดาวน์โหลดใหม่ทับ (re-download)
+
+**เทคโนโลยี (Tech stack):** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK สำหรับ API และการดาวน์โหลด, [requests](https://pypi.org/project/requests/) สำหรับ streaming download, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`, hashlib (SHA-256) สำหรับตรวจสอบความถูกต้องของไฟล์
 
 ---
 
@@ -285,13 +298,13 @@ pytest tests/ --cov=main --cov-report=html
 
 - **parse_folder_identifier** — URL, folder key 13 ตัว, path, `mf:` URI
 - **parse_folder_identifiers** — ค่าหลายโฟลเดอร์คั่นด้วย comma/newline
-- **_folder_display_name** — ชื่อโฟลเดอร์จาก URL/key/path
-- **_sanitize_path_component / _sanitize_dirname** — อักขระต้องห้ามในชื่อไฟล์/โฟลเดอร์
-- **_default_worker_count** — จำนวน thread ตาม CPU
-- **_get_download_url_from_links** — ดึง URL จาก API response (direct_download, normal_download)
-- **_extract_direct_url_from_html** — ดึง URL ตรงจากหน้า HTML
+- **\_folder_display_name** — ชื่อโฟลเดอร์จาก URL/key/path
+- **\_sanitize_path_component / \_sanitize_dirname** — อักขระต้องห้ามในชื่อไฟล์/โฟลเดอร์
+- **\_default_worker_count** — จำนวน thread ตาม CPU
+- **\_get_download_url_from_links** — ดึง URL จาก API response (direct_download, normal_download)
+- **\_extract_direct_url_from_html** — ดึง URL ตรงจากหน้า HTML
 - **list_all_files** — รายการไฟล์ (รวม subfolder) ด้วย mock client
-- **_download_file_safe** — ดาวน์โหลดไฟล์ด้วย mock client และ requests
+- **\_download_file_safe** — ดาวน์โหลดไฟล์ด้วย mock client และ requests
 - **download_folder** — โฟลเดอร์ว่าง, ข้ามไฟล์ที่มีอยู่แล้ว
 - **main()** — CLI: ไม่มีโฟลเดอร์/ไม่มี credentials → exit 1; มี folder + credentials + mock client → เรียก download_folder และแสดงสรุปผล; มี failed downloads → exit 1
 

@@ -7,6 +7,7 @@ No changes to main.py logic; coverage via pytest and pytest-cov.
 
 from __future__ import print_function
 
+import hashlib
 import os
 import sys
 from io import StringIO
@@ -306,11 +307,13 @@ def test_download_file_safe_success(mock_get, tmp_path):
     client = MagicMock()
     resource = MagicMock()
     resource.__class__ = main_module.File
-    resource.__getitem__ = lambda self, k: {
+    _data = {
         "quickkey": "qk1",
         "filename": "test.bin",
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    }[k]
+    }
+    resource.__getitem__ = lambda self, k: _data[k]
+    resource.get = lambda k, default=None: _data.get(k, default)
     client.get_resource_by_uri.return_value = resource
     client.api.file_get_links.return_value = {
         "links": [{"direct_download": "https://example.com/f"}]
@@ -334,6 +337,60 @@ def test_download_file_safe_not_file_raises(mock_get):
         main_module._download_file_safe(client, "mf:qk1", "/tmp/out.bin")
 
 
+@patch("main.requests.get")
+def test_download_file_safe_hash_mismatch_removes_file(mock_get, tmp_path):
+    """When server hash does not match local SHA-256, file is removed and error raised."""
+    client = MagicMock()
+    resource = MagicMock()
+    resource.__class__ = main_module.File
+    # Empty content has SHA-256 e3b0c44...; use wrong hash to force mismatch
+    _data = {
+        "quickkey": "qk1",
+        "filename": "test.bin",
+        "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    }
+    resource.__getitem__ = lambda self, k: _data[k]
+    resource.get = lambda k, default=None: _data.get(k, default)
+    client.get_resource_by_uri.return_value = resource
+    client.api.file_get_links.return_value = {
+        "links": [{"direct_download": "https://example.com/f"}]
+    }
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.headers = {"Content-Type": "application/octet-stream"}
+    resp.iter_content = lambda **kw: [b""]
+    mock_get.return_value = resp
+    local = str(tmp_path / "test.bin")
+    with pytest.raises(main_module.MediaFireDownloadError) as exc_info:
+        main_module._download_file_safe(client, "mf:qk1", local)
+    assert "Hash mismatch" in str(exc_info.value)
+    assert not os.path.isfile(local)
+
+
+@patch("main.requests.get")
+def test_download_file_safe_no_server_hash_skips_verification(mock_get, tmp_path):
+    """When server does not provide hash, download succeeds and integrity check is skipped."""
+    client = MagicMock()
+    resource = MagicMock()
+    resource.__class__ = main_module.File
+    _data = {"quickkey": "qk1", "filename": "test.bin"}  # no "hash" -> skip verification
+    resource.__getitem__ = lambda self, k: _data[k]
+    resource.get = lambda k, default=None: _data.get(k, default)
+    client.get_resource_by_uri.return_value = resource
+    client.api.file_get_links.return_value = {
+        "links": [{"direct_download": "https://example.com/f"}]
+    }
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.headers = {"Content-Type": "application/octet-stream"}
+    resp.iter_content = lambda **kw: [b"content"]
+    mock_get.return_value = resp
+    local = str(tmp_path / "test.bin")
+    main_module._download_file_safe(client, "mf:qk1", local)
+    assert os.path.isfile(local)
+    assert open(local, "rb").read() == b"content"
+
+
 # ---------------------------------------------------------------------------
 # download_folder
 # ---------------------------------------------------------------------------
@@ -346,16 +403,45 @@ def test_download_folder_empty(tmp_path):
 
 @patch("main._download_file_safe")
 def test_download_folder_skips_existing(mock_download, tmp_path):
+    """When file exists and its hash matches server, skip download."""
     existing = tmp_path / "existing.txt"
     existing.write_text("x")
+    hash_of_x = hashlib.sha256(b"x").hexdigest().lower()
     client = MagicMock()
     file_item = MagicMock()
     file_item.__class__ = main_module.File
     file_item.__iter__ = lambda self: iter([])
     file_item.__getitem__ = lambda self, k: {"quickkey": "qk1", "filename": "existing.txt"}[k]
     client.get_folder_contents_iter.return_value = iter([file_item])
+    # When checking existing file, get_resource_by_uri must return a File with matching hash
+    resource = MagicMock()
+    resource.__class__ = main_module.File
+    resource.get = lambda k, default=None: hash_of_x if k == "hash" else {"quickkey": "qk1", "filename": "existing.txt"}.get(k, default)
+    client.get_resource_by_uri.return_value = resource
     main_module.download_folder(client, "mf:key", str(tmp_path), verbose=False)
     mock_download.assert_not_called()
+
+
+@patch("main._download_file_safe")
+def test_download_folder_redownloads_when_existing_hash_mismatch(mock_download, tmp_path):
+    """When file exists but hash does not match server, re-download (overwrite)."""
+    existing = tmp_path / "existing.txt"
+    existing.write_text("x")
+    # Server hash is different (e.g. server has newer version)
+    wrong_hash = "0" * 64
+    client = MagicMock()
+    file_item = MagicMock()
+    file_item.__class__ = main_module.File
+    file_item.__iter__ = lambda self: iter([])
+    file_item.__getitem__ = lambda self, k: {"quickkey": "qk1", "filename": "existing.txt"}[k]
+    client.get_folder_contents_iter.return_value = iter([file_item])
+    resource = MagicMock()
+    resource.__class__ = main_module.File
+    resource.get = lambda k, default=None: wrong_hash if k == "hash" else {"quickkey": "qk1", "filename": "existing.txt"}.get(k, default)
+    client.get_resource_by_uri.return_value = resource
+    mock_download.return_value = None  # no exception
+    main_module.download_folder(client, "mf:key", str(tmp_path), verbose=False)
+    mock_download.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
