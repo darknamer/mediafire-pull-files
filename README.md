@@ -10,6 +10,7 @@
 
 | Date       | Change                                                                                                                                                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-03-15 | GitHub Actions CI: `.github/workflows/test.yml` — run unit tests on push/PR (Python 3.9–3.12); README updated with CI section and project structure.                                                                  |
 | 2026-03-15 | Unit tests (pytest) and coverage (pytest-cov) added; `tests/test_main.py`; `requirements-dev.txt`; README updated with Testing section. No changes to `main.py` logic.                                                |
 | 2025-03-14 | Download: รองรับทั้ง `direct_download` และ `normal_download` ถ้า API คืนแค่ normal_download และได้หน้า HTML จะ parse หา URL ไฟล์จริง (download\*.mediafire.com) แล้วดาวน์โหลดต่อ ตรวจ hash (SHA-256) หลังดาวน์โหลด |
 | 2025-03-14 | Multi-threaded download (default: CPU count); `-j` / `--threads` and `MEDIAFIRE_THREADS`.                                                                                                                          |
@@ -272,12 +273,28 @@ pytest tests/ --cov=main --cov-report=html
 - **download_folder** — โฟลเดอร์ว่าง, ข้ามไฟล์ที่มีอยู่แล้ว
 - **main()** — CLI: ไม่มีโฟลเดอร์/ไม่มี credentials → exit 1; มี folder + credentials + mock client → เรียก download_folder
 
+### GitHub Actions (CI)
+
+Unit tests รันอัตโนมัติบน GitHub Actions ทุกครั้งที่ push หรือเปิด pull request ไปยัง `main` / `master`
+
+- **Workflow:** `.github/workflows/test.yml`
+- **Triggers:** `push` และ `pull_request` ที่ branch `main`, `master`
+- **Runner:** `ubuntu-latest`
+- **Python versions:** 3.9, 3.10, 3.11, 3.12 (matrix)
+- **Steps:** checkout → setup Python (with pip cache) → `pip install -r requirements-dev.txt` → `pytest tests/ -v --tb=short` → `pytest tests/ --cov=main --cov-report=term-missing`
+- **Credentials:** ไม่ต้องตั้งค่า secret — tests ใช้ mock ไม่เรียก MediaFire จริง
+
+ผลการรันทดสอบแสดงในแท็บ **Actions** ของ repo และบน pull request เป็น status check
+
 ---
 
 ## โครงสร้างโปรเจกต์
 
 ```text
 mediafire_pull_file/
+├── .github/
+│   └── workflows/
+│       └── test.yml     # GitHub Actions: run unit tests on push/PR
 ├── main.py              # จุดเข้า CLI, logic ดาวน์โหลด (direct/normal_download, parse HTML)
 ├── requirements.txt     # mediafire, requests, python-dotenv
 ├── requirements-dev.txt # สำหรับพัฒนา: requirements.txt + pytest, pytest-cov
