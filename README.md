@@ -1,6 +1,6 @@
 # MediaFire Pull File
 
-**Last updated:** 2025-03-14
+**Last updated:** 2026-03-15
 
 ดาวน์โหลดไฟล์จากโฟลเดอร์ MediaFire ลงคอมพิวเตอร์ของคุณ โดยคงโครงสร้างโฟลเดอร์ให้เหมือนต้นทาง รองรับทั้งโฟลเดอร์เดียวและหลายโฟลเดอร์ ดาวน์โหลดแบบหลายเธรด (จำนวนเธรดตามจำนวน CPU) และรองรับทั้งลิงก์ direct_download และ normal_download (เมื่อได้หน้า HTML จะดึง URL ไฟล์จริงจากในหน้านั้น)
 
@@ -10,6 +10,7 @@
 
 | Date       | Change                                                                                                                                                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 2026-03-15 | Unit tests (pytest) and coverage (pytest-cov) added; `tests/test_main.py`; `requirements-dev.txt`; README updated with Testing section. No changes to `main.py` logic.                                                |
 | 2025-03-14 | Download: รองรับทั้ง `direct_download` และ `normal_download` ถ้า API คืนแค่ normal_download และได้หน้า HTML จะ parse หา URL ไฟล์จริง (download\*.mediafire.com) แล้วดาวน์โหลดต่อ ตรวจ hash (SHA-256) หลังดาวน์โหลด |
 | 2025-03-14 | Multi-threaded download (default: CPU count); `-j` / `--threads` and `MEDIAFIRE_THREADS`.                                                                                                                          |
 | 2025-03-14 | Multiple folder URLs: comma/newline in `MEDIAFIRE_FOLDER` or multiple CLI args; each folder → subdir under output.                                                                                                 |
@@ -225,14 +226,66 @@ python main.py "https://..." -j 8
 
 ---
 
+## การทดสอบ (Unit tests & coverage)
+
+โปรเจกต์ใช้ **pytest** และ **pytest-cov** สำหรับ unit test และ coverage โดยไม่แก้ logic ใน `main.py`
+
+### ติดตั้ง dependencies สำหรับทดสอบ
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+(`requirements-dev.txt` รวม `requirements.txt` + pytest + pytest-cov)
+
+### รัน unit tests
+
+```bash
+# รันทุก test
+pytest tests/ -v
+
+# รันแบบย่อ
+pytest tests/ -q
+```
+
+### รัน coverage
+
+```bash
+# แสดง coverage บนเทอร์มินัล (มีรายการบรรทัดที่ยังไม่ถูก cover)
+pytest tests/ --cov=main --cov-report=term-missing
+
+# สร้างรายงาน HTML (โฟลเดอร์ htmlcov/)
+pytest tests/ --cov=main --cov-report=html
+```
+
+### สิ่งที่ทดสอบ
+
+- **parse_folder_identifier** — URL, folder key 13 ตัว, path, `mf:` URI
+- **parse_folder_identifiers** — ค่าหลายโฟลเดอร์คั่นด้วย comma/newline
+- **_folder_display_name** — ชื่อโฟลเดอร์จาก URL/key/path
+- **_sanitize_path_component / _sanitize_dirname** — อักขระต้องห้ามในชื่อไฟล์/โฟลเดอร์
+- **_default_worker_count** — จำนวน thread ตาม CPU
+- **_get_download_url_from_links** — ดึง URL จาก API response (direct_download, normal_download)
+- **_extract_direct_url_from_html** — ดึง URL ตรงจากหน้า HTML
+- **list_all_files** — รายการไฟล์ (รวม subfolder) ด้วย mock client
+- **_download_file_safe** — ดาวน์โหลดไฟล์ด้วย mock client และ requests
+- **download_folder** — โฟลเดอร์ว่าง, ข้ามไฟล์ที่มีอยู่แล้ว
+- **main()** — CLI: ไม่มีโฟลเดอร์/ไม่มี credentials → exit 1; มี folder + credentials + mock client → เรียก download_folder
+
+---
+
 ## โครงสร้างโปรเจกต์
 
 ```text
 mediafire_pull_file/
-├── main.py           # จุดเข้า CLI, logic ดาวน์โหลด (direct/normal_download, parse HTML)
-├── requirements.txt  # mediafire, requests, python-dotenv
-├── .env.example      # ตัวอย่าง .env (คัดลอกเป็น .env)
-├── .env              # ข้อมูลล็อกอินของคุณ (สร้างจาก .env.example ห้าม commit)
+├── main.py              # จุดเข้า CLI, logic ดาวน์โหลด (direct/normal_download, parse HTML)
+├── requirements.txt     # mediafire, requests, python-dotenv
+├── requirements-dev.txt # สำหรับพัฒนา: requirements.txt + pytest, pytest-cov
+├── tests/
+│   ├── __init__.py
+│   └── test_main.py     # unit tests สำหรับ main.py
+├── .env.example         # ตัวอย่าง .env (คัดลอกเป็น .env)
+├── .env                 # ข้อมูลล็อกอินของคุณ (สร้างจาก .env.example ห้าม commit)
 └── README.md
 ```
 
