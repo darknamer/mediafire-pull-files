@@ -17,10 +17,12 @@ from __future__ import print_function
 # ---------------------------------------------------------------------------
 import argparse
 import hashlib
+import logging
 import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from queue import Queue
 
 import requests
@@ -50,6 +52,37 @@ MEDIAFIRE_DIRECT_URL_IN_HTML = re.compile(
     r"https?://download\d*\.mediafire\.com/[^\s\"'<>]+",
     re.IGNORECASE,
 )
+
+# Log file name format: log-{yyyy}{MM}{dd}.log (e.g. log-20250314.log)
+def _default_log_filename():
+    return "log-{}.log".format(date.today().strftime("%Y%m%d"))
+
+
+logger = logging.getLogger(__name__)
+
+
+def setup_logging(verbose=True, log_file=None):
+    """
+    Configure logging: always to file, and to console when verbose.
+    log_file: path to log file (default: env MEDIAFIRE_LOG_FILE or log-YYYYMMDD.log in cwd).
+    """
+    log_path = log_file or os.environ.get("MEDIAFIRE_LOG_FILE", _default_log_filename())
+    log_path = os.path.abspath(log_path)
+    logger.setLevel(logging.DEBUG)
+    logger.handlers.clear()
+    formatter = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO if verbose else logging.ERROR)
+    console.setFormatter(formatter)
+    logger.addHandler(console)
+    logger.info("Log file: %s", log_path)
 
 
 # ---------------------------------------------------------------------------
@@ -116,11 +149,28 @@ def _folder_display_name(identifier, uri, index):
     return _sanitize_dirname(path.split("/")[-1] or "folder_{}".format(index))
 
 
+# Characters invalid in file/directory names on Windows (and problematic on Unix)
+_INVALID_PATH_CHARS = ('/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0')
+
+
+def _sanitize_path_component(name):
+    """
+    Replace special/invalid characters with underscore so the name is safe for
+    use as a file or directory name (Windows and Unix).
+    """
+    if not name or not isinstance(name, str):
+        return "file"  # fallback for empty or non-string
+    for c in _INVALID_PATH_CHARS:
+        name = name.replace(c, "_")
+    # Replace control characters (e.g. \n, \r, \t, and other ord < 32)
+    name = "".join("_" if ord(ch) < 32 else ch for ch in name)
+    result = name.strip(". ")
+    return result if result else "file"
+
+
 def _sanitize_dirname(name):
     """Make a string safe for use as a directory name (Windows/Unix)."""
-    for c in ('/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'):
-        name = name.replace(c, "_")
-    return name.strip(". ") or "folder"
+    return _sanitize_path_component(name) if name else "folder"
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +235,7 @@ def _download_file_safe(client, file_uri, local_path):
         )
     download_url = download_url.replace("http:", "https:")
 
-    name = resource["filename"]
+    name = _sanitize_path_component(resource["filename"])
     if (os.path.exists(local_path) and os.path.isdir(local_path)) or local_path.endswith("/"):
         local_path = os.path.join(local_path, name)
     parent = os.path.dirname(local_path)
@@ -237,17 +287,18 @@ def list_all_files(client, folder_uri, local_base_path):
     """
     Recursively list all files under a MediaFire folder.
     Yields (file_uri, local_path) for each file (no download).
+    File and folder names are sanitized (special chars replaced with _).
     """
     os.makedirs(local_base_path, exist_ok=True)
     for item in client.get_folder_contents_iter(folder_uri):
         if isinstance(item, File):
             file_uri = "mf:{}".format(item["quickkey"])
-            filename = item["filename"]
+            filename = _sanitize_path_component(item["filename"])
             local_path = os.path.join(local_base_path, filename)
             yield (file_uri, local_path)
         elif isinstance(item, Folder):
             # Recurse into subfolder and yield all files inside
-            folder_name = item["name"]
+            folder_name = _sanitize_path_component(item["name"])
             sub_uri = "mf:{}".format(item["folderkey"])
             sub_path = os.path.join(local_base_path, folder_name)
             for file_uri, local_path in list_all_files(client, sub_uri, sub_path):
@@ -262,7 +313,7 @@ def _download_one_file(client_pool, file_uri, local_path, verbose):
     """
     if os.path.isfile(local_path):
         if verbose:
-            print("Skipping (exists): {}".format(local_path))
+            logger.info("Skipping (exists): %s", local_path)
         return
     client = client_pool.get()
     try:
@@ -270,7 +321,7 @@ def _download_one_file(client_pool, file_uri, local_path, verbose):
         if parent:
             os.makedirs(parent, exist_ok=True)
         if verbose:
-            print("Downloading: {}".format(local_path))
+            logger.info("Downloading: %s", local_path)
         _download_file_safe(client, file_uri, local_path)
     finally:
         client_pool.put(client)  # always return client to pool
@@ -329,30 +380,24 @@ def download_folder(
                 try:
                     future.result()
                 except Exception as e:
-                    print(
-                        "Error downloading {}: {}".format(local_path, e),
-                        file=sys.stderr,
-                    )
+                    logger.error("Error downloading %s: %s", local_path, e)
                     raise
     else:
         # Sequential: single client, one file at a time
         for file_uri, local_path in file_list:
             if os.path.isfile(local_path):
                 if verbose:
-                    print("Skipping (exists): {}".format(local_path))
+                    logger.info("Skipping (exists): %s", local_path)
                 continue
             parent = os.path.dirname(local_path)
             if parent:
                 os.makedirs(parent, exist_ok=True)
             if verbose:
-                print("Downloading: {}".format(local_path))
+                logger.info("Downloading: %s", local_path)
             try:
                 _download_file_safe(client, file_uri, local_path)
             except Exception as e:
-                print(
-                    "Error downloading {}: {}".format(os.path.basename(local_path), e),
-                    file=sys.stderr,
-                )
+                logger.error("Error downloading %s: %s", os.path.basename(local_path), e)
                 raise
 
 
@@ -384,6 +429,12 @@ def main():
         "--quiet",
         action="store_true",
         help="Reduce output (only errors).",
+    )
+    parser.add_argument(
+        "-l",
+        "--log-file",
+        default=os.environ.get("MEDIAFIRE_LOG_FILE", _default_log_filename()),
+        help="Path to log file (default: MEDIAFIRE_LOG_FILE or log-YYYYMMDD.log).",
     )
     parser.add_argument(
         "--email",
@@ -419,6 +470,9 @@ def main():
     )
     args = parser.parse_args()
 
+    verbose = not args.quiet
+    setup_logging(verbose=verbose, log_file=args.log_file)
+
     # Resolve folder list: CLI args or MEDIAFIRE_FOLDER (comma/newline separated)
     if args.folder:
         raw = ",".join(args.folder) if len(args.folder) > 1 else args.folder[0]
@@ -427,22 +481,19 @@ def main():
     folders = parse_folder_identifiers(raw)
 
     if not folders:
-        print(
-            "Error: No folder specified. Pass one or more MediaFire URLs/keys, or set MEDIAFIRE_FOLDER "
-            "(comma- or newline-separated for multiple).",
-            file=sys.stderr,
+        logger.error(
+            "No folder specified. Pass one or more MediaFire URLs/keys, or set MEDIAFIRE_FOLDER "
+            "(comma- or newline-separated for multiple)."
         )
         sys.exit(1)
 
     if not args.email or not args.password:
-        print(
-            "Error: MediaFire credentials required. Set MEDIAFIRE_EMAIL and MEDIAFIRE_PASSWORD "
-            "or use --email and --password.",
-            file=sys.stderr,
+        logger.error(
+            "MediaFire credentials required. Set MEDIAFIRE_EMAIL and MEDIAFIRE_PASSWORD "
+            "or use --email and --password."
         )
         sys.exit(1)
 
-    verbose = not args.quiet
     n_workers = args.threads if args.threads is not None else _default_worker_count()
     n_workers = max(1, n_workers)
 
@@ -459,11 +510,11 @@ def main():
                     app_id=args.app_id,
                 )
             except Exception as e:
-                print("Login failed: {}".format(e), file=sys.stderr)
+                logger.error("Login failed: %s", e)
                 sys.exit(1)
             client_pool.put(c)
         if verbose:
-            print("Using {} download thread(s).".format(n_workers))
+            logger.info("Using %s download thread(s).", n_workers)
 
     # One client for folder listing and for sequential downloads when n_workers == 1
     client = MediaFireClient()
@@ -474,7 +525,7 @@ def main():
             app_id=args.app_id,
         )
     except Exception as e:
-        print("Login failed: {}".format(e), file=sys.stderr)
+        logger.error("Login failed: %s", e)
         sys.exit(1)
 
     output_base = os.path.abspath(args.output)
@@ -484,13 +535,13 @@ def main():
         if len(folders) == 1:
             local_path = output_base
             if verbose:
-                print("Folder URI: {}".format(folder_uri))
-                print("Output dir: {}".format(local_path))
+                logger.info("Folder URI: %s", folder_uri)
+                logger.info("Output dir: %s", local_path)
         else:
             local_path = os.path.join(output_base, display_name)
             if verbose:
-                print("Folder URI: {}".format(folder_uri))
-                print("Output dir: {}".format(local_path))
+                logger.info("Folder URI: %s", folder_uri)
+                logger.info("Output dir: %s", local_path)
 
         try:
             download_folder(
@@ -502,11 +553,11 @@ def main():
                 max_workers=n_workers if client_pool else None,
             )
         except Exception as e:
-            print("Download failed for {}: {}".format(folder_uri, e), file=sys.stderr)
+            logger.error("Download failed for %s: %s", folder_uri, e)
             sys.exit(1)
 
     if verbose:
-        print("Done.")
+        logger.info("Done.")
 
 
 if __name__ == "__main__":

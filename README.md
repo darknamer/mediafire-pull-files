@@ -168,6 +168,7 @@ python main.py [FOLDER ...] [OPTIONS]
 | `--app-id`   | —     | MediaFire App ID                                                                 | `42511`       |
 | `--threads`  | `-j`  | จำนวนเธรดสำหรับดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                             | ตาม CPU       |
 | `--quiet`    | `-q`  | แสดงผลน้อยลง (เฉพาะเมื่อมีข้อผิดพลาด)                                            | ปิด           |
+| `--log-file` | `-l`  | path ไฟล์ log (ข้อความทั้งหมดจะเขียนลงไฟล์นี้ด้วย)                               | `log-YYYYMMDD.log` |
 
 **ตัวอย่าง**
 
@@ -205,6 +206,7 @@ python main.py "https://..." -j 8
 | `MEDIAFIRE_OUTPUT`   | ไม่    | โฟลเดอร์ปลายทางเริ่มต้น                                                    |
 | `MEDIAFIRE_APP_ID`   | ไม่    | MediaFire App ID (ค่าเริ่มต้น: `42511`)                                    |
 | `MEDIAFIRE_THREADS`  | ไม่    | จำนวนเธรดดาวน์โหลด (ค่าเริ่มต้น: ตามจำนวน CPU)                             |
+| `MEDIAFIRE_LOG_FILE` | ไม่    | path ไฟล์ log (ค่าเริ่มต้น: `log-YYYYMMDD.log` ตามวันที่รัน)                |
 
 \*จำเป็นสำหรับการดูรายการ/ดาวน์โหลด ตั้งใน `.env` หรือใช้ `--email` / `--password` ก็ได้
 
@@ -217,6 +219,7 @@ python main.py "https://..." -j 8
 - **การดาวน์โหลด:** ดาวน์โหลดแต่ละไฟล์และสร้างโครงสร้างโฟลเดอร์เดียวกันบนดิสก์ ใช้หลายเธรด (ค่าเริ่มต้นเท่ากับจำนวน logical CPU) เพื่อเร่งความเร็ว
 - **ลิงก์ดาวน์โหลด:** ใช้ `direct_download` จาก API ก่อน ถ้าไม่มีจะลอง `normal_download` ถ้าได้หน้า HTML จะ parse หา URL ตรง (รูปแบบ `download*.mediafire.com`) แล้วดาวน์โหลดจาก URL นั้น หลังดาวน์โหลดจะตรวจสอบ SHA-256 กับค่าจาก API ถ้าไม่ตรงจะลบไฟล์และแจ้ง error
 - **หลายโฟลเดอร์:** เมื่อส่งหลาย URL แต่ละโฟลเดอร์จะถูกเขียนไปยังโฟลเดอร์ย่อยของ path ปลายทาง (เช่น `./downloads/FolderName1/`, `./downloads/FolderName2/`)
+- **Log:** ข้อความจากกระบวนการหลัก (โฟลเดอร์, การดาวน์โหลด, ข้ามไฟล์ที่มีอยู่, error) จะเขียนลงไฟล์ log (ชื่อตามวัน: `log-YYYYMMDD.log` หรือกำหนด path ด้วย `-l` / `--log-file` / `MEDIAFIRE_LOG_FILE`)
 
 **เทคโนโลยี:** Python 3, [mediafire](https://pypi.org/project/mediafire/) SDK, [requests](https://pypi.org/project/requests/) สำหรับ streaming download, [python-dotenv](https://pypi.org/project/python-dotenv/) สำหรับโหลด `.env`
 

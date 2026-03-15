@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Logs (log-YYYYMMDD.log)
+log-*.log
+
 # Virtual environments
 .venv/
 venv/
